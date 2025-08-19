@@ -11,5 +11,13 @@ public class MainActivity extends AppCompatActivity {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
 
+        new UnCaughtException.Builder(this)
+                .setMailSuport("siacsuporteandroid@gmail.com")
+                .setTrackActivitiesEnabled(true)
+                .setBackgroundModeEnabled(true)
+                .build();
+
+        double a = 10 / 0;
+
     }
 }
