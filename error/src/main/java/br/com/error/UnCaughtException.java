@@ -1,20 +1,3 @@
-/*
- *
- *  * Copyright © 2018-19 Rohit Sahebrao Surwase.
- *  *
- *  *    Licensed under the Apache License, Version 2.0 (the "License");
- *  *    you may not use this file except in compliance with the License.
- *  *    You may obtain a copy of the License at
- *  *
- *  *        http://www.apache.org/licenses/LICENSE-2.0
- *  *
- *  *    Unless required by applicable law or agreed to in writing, software
- *  *    distributed under the License is distributed on an "AS IS" BASIS,
- *  *    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- *  *    See the License for the specific language governing permissions and
- *  * limitations under the License.
- *
- */
 package br.com.error;
 
 import android.annotation.SuppressLint;
@@ -24,15 +7,11 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.os.Bundle;
-import android.preference.PreferenceManager;
 import android.util.Log;
 
-import androidx.constraintlayout.widget.ConstraintLayout;
+import androidx.annotation.NonNull;
 
 import com.google.gson.Gson;
-
-import org.json.JSONArray;
-import org.json.JSONObject;
 
 import java.io.PrintWriter;
 import java.io.StringWriter;
@@ -42,182 +21,332 @@ import java.text.SimpleDateFormat;
 import java.util.ArrayDeque;
 import java.util.Date;
 import java.util.Deque;
-import java.util.HashSet;
 import java.util.Locale;
-import java.util.Set;
 
-
+/**
+ * ============================================================
+ * UnCaughtException
+ * ============================================================
+ * <p>
+ * Handler global para capturar exceções não tratadas (crashes).
+ * <p>
+ * Responsabilidades principais:
+ * <p>
+ * 1) Interceptar crashes globais da aplicação.
+ * 2) Evitar crash loop (loop infinito de crash).
+ * 3) Opcionalmente abrir uma Activity de erro personalizada.
+ * 4) Registrar log das últimas Activities (debug).
+ * 5) Persistir informações necessárias antes de finalizar o processo.
+ * <p>
+ * IMPORTANTE:
+ * - Esta classe substitui o UncaughtExceptionHandler padrão da JVM.
+ * - Após tratar o erro, o processo é encerrado manualmente.
+ * - Não deve conter operações pesadas.
+ * <p>
+ * Uso recomendado:
+ * <p>
+ * new UnCaughtException.Builder(context)
+ * .setMailSuport("email@empresa.com")
+ * .setTrackActivitiesEnabled(true)
+ * .setBackgroundModeEnabled(true)
+ * .build();
+ * <p>
+ * ============================================================
+ */
 public final class UnCaughtException {
 
+    // ===============================
+    // CONSTANTES PÚBLICAS
+    // ===============================
+
+    /**
+     * Intent extra contendo a stacktrace do crash
+     */
     static final String EXTRA_STACK_TRACE = "EXTRA_STACK_TRACE";
+
+    /**
+     * Intent extra contendo o histórico de Activities
+     */
     static final String EXTRA_ACTIVITY_LOG = "EXTRA_ACTIVITY_LOG";
-    private final static String TAG = "UnCaught";
-    private static final String UCE_HANDLER_PACKAGE_NAME = "br.com.error";
-    private static final String DEFAULT_HANDLER_PACKAGE_NAME = "com.android.internal.os";
-    private static final int MAX_STACK_TRACE_SIZE = 131071; //128 KB - 1
+
+    // ===============================
+    // CONSTANTES INTERNAS
+    // ===============================
+
+    private static final String TAG = "UnCaught";
+
+    /**
+     * Arquivo de SharedPreferences utilizado pela lib
+     */
+    private static final String PREF_FILE = "uceh_preferences";
+
+    /**
+     * Chave que armazena o timestamp do último crash
+     */
+    private static final String KEY_LAST_CRASH = "last_crash_timestamp";
+
+    /**
+     * Limite máximo de caracteres da stacktrace
+     */
+    private static final int MAX_STACK_TRACE_SIZE = 131071;
+
+    /**
+     * Quantidade máxima de Activities armazenadas no log
+     */
     private static final int MAX_ACTIVITIES_IN_LOG = 50;
-    private static final String SHARED_PREFERENCES_FILE = "uceh_preferences";
-    private static final String SHARED_PREFERENCES_FIELD_TIMESTAMP = "last_crash_timestamp";
+
+    // ===============================
+    // ESTADO GLOBAL
+    // ===============================
+
+    /**
+     * Fila circular com histórico de lifecycle das Activities.
+     * Usado apenas se o tracking estiver habilitado.
+     */
     private static final Deque<String> activityLog = new ArrayDeque<>(MAX_ACTIVITIES_IN_LOG);
-    static String COMMA_SEPARATED_EMAIL_ADDRESSES;
+
+    /**
+     * Referência fraca para última Activity criada.
+     * Evita memory leak.
+     */
+    private static WeakReference<Activity> lastActivityCreated =
+            new WeakReference<>(null);
+
+    /**
+     * Application global.
+     * <p>
+     * ⚠️ StaticFieldLeak suprimido pois usamos apenas Application,
+     * que tem ciclo de vida igual ao processo.
+     */
     @SuppressLint("StaticFieldLeak")
     private static Application application;
-    private static boolean isInBackground = true;
-    private static boolean isBackgroundMode;
-    private static boolean isUCEHEnabled;
-    private static boolean isTrackActivitiesEnabled;
-    private static WeakReference<Activity> lastActivityCreated = new WeakReference<>(null);
 
-    UnCaughtException(Builder builder) {
+    /**
+     * Indica se app está em background
+     */
+    private static boolean isInBackground = true;
+
+    /**
+     * Permite exibir tela de erro mesmo em background
+     */
+    private static boolean isBackgroundMode;
+
+    /**
+     * Liga/desliga o handler
+     */
+    private static boolean isUCEHEnabled;
+
+    /**
+     * Liga/desliga tracking de Activities
+     */
+    private static boolean isTrackActivitiesEnabled;
+
+    /**
+     * Lista de e-mails configurados
+     */
+    static String COMMA_SEPARATED_EMAIL_ADDRESSES;
+
+    // ============================================================
+    // CONSTRUTOR PRIVADO (PADRÃO BUILDER)
+    // ============================================================
+
+    private UnCaughtException(Builder builder) {
+
+        application = builder.application;
         isUCEHEnabled = builder.isUCEHEnabled;
         isTrackActivitiesEnabled = builder.isTrackActivitiesEnabled;
         isBackgroundMode = builder.isBackgroundModeEnabled;
         COMMA_SEPARATED_EMAIL_ADDRESSES = builder.commaSeparatedEmailAddresses;
-        setHandler(builder.context);
+
+        installHandler();
+        registerLifecycleCallbacks();
     }
 
-    private static void setHandler(final Context context) {
-        try {
-            if (context != null) {
-                final Thread.UncaughtExceptionHandler oldHandler = Thread.getDefaultUncaughtExceptionHandler();
-                if (oldHandler != null && oldHandler.getClass().getName().startsWith(UCE_HANDLER_PACKAGE_NAME)) {
-                    Log.e(TAG, "UCEHandler was already installed, doing nothing!");
-                } else {
-                    if (oldHandler != null && !oldHandler.getClass().getName().startsWith(DEFAULT_HANDLER_PACKAGE_NAME)) {
-                        Log.e(TAG, "You already have an UncaughtExceptionHandler. If you use a custom UncaughtExceptionHandler, it should be initialized after UCEHandler! Installing anyway, but your original handler will not be called.");
-                    }
-                    application = (Application) context.getApplicationContext();
-                    //Setup UCE Handler.
-                    Thread.setDefaultUncaughtExceptionHandler(new Thread.UncaughtExceptionHandler() {
-                        @Override
-                        public void uncaughtException(Thread thread, final Throwable throwable) {
-                            if (isUCEHEnabled) {
-                                Log.e(TAG, "App crashed, executing UCEHandler's UncaughtExceptionHandler", throwable);
-                                if (hasCrashedInTheLastSeconds(application)) {
-                                    Log.e(TAG, "App already crashed recently, not starting custom error activity because we could enter a restart loop. Are you sure that your app does not crash directly on init?", throwable);
-                                    if (oldHandler != null) {
-                                        oldHandler.uncaughtException(thread, throwable);
-                                        return;
-                                    }
-                                } else {
-                                    setLastCrashTimestamp(application, new Date().getTime());
-                                    if (!isInBackground || isBackgroundMode) {
-                                        final Intent intent = new Intent(application, DefaultActivity.class);
-                                        StringWriter sw = new StringWriter();
-                                        PrintWriter pw = new PrintWriter(sw);
-                                        throwable.printStackTrace(pw);
-                                        String stackTraceString = sw.toString();
-                                        if (stackTraceString.length() > MAX_STACK_TRACE_SIZE) {
-                                            String disclaimer = " [stack trace too large]";
-                                            stackTraceString = stackTraceString.substring(0, MAX_STACK_TRACE_SIZE - disclaimer.length()) + disclaimer;
-                                        }
-                                        intent.putExtra(EXTRA_STACK_TRACE, stackTraceString);
-                                        if (isTrackActivitiesEnabled) {
-                                            StringBuilder activityLogStringBuilder = new StringBuilder();
-                                            while (!activityLog.isEmpty()) {
-                                                activityLogStringBuilder.append(activityLog.poll());
-                                            }
-                                            intent.putExtra(EXTRA_ACTIVITY_LOG, activityLogStringBuilder.toString());
-                                        }
-                                        intent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK);
-                                        application.startActivity(intent);
-                                    } else {
-                                        if (oldHandler != null) {
-                                            oldHandler.uncaughtException(thread, throwable);
-                                            return;
-                                        }
-                                    }
-                                }
-                                final Activity lastActivity = lastActivityCreated.get();
-                                if (lastActivity != null) {
-                                    lastActivity.finish();
-                                    lastActivityCreated.clear();
-                                }
-                                killCurrentProcess();
-                            } else if (oldHandler != null) {
-                                oldHandler.uncaughtException(thread, throwable);
-                            }
-                        }
-                    });
-                    application.registerActivityLifecycleCallbacks(new Application.ActivityLifecycleCallbacks() {
-                        final DateFormat dateFormat = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US);
-                        int currentlyStartedActivities = 0;
+    // ============================================================
+    // INSTALAÇÃO DO HANDLER GLOBAL
+    // ============================================================
 
-                        @Override
-                        public void onActivityCreated(Activity activity, Bundle savedInstanceState) {
-                            if (activity.getClass() != DefaultActivity.class) {
-                                lastActivityCreated = new WeakReference<>(activity);
-                            }
-                            if (isTrackActivitiesEnabled) {
-                                activityLog.add(dateFormat.format(new Date()) + ": " + activity.getClass().getSimpleName() + " created\n");
-                            }
-                        }
+    /**
+     * Substitui o UncaughtExceptionHandler padrão.
+     * <p>
+     * Fluxo:
+     * 1) Verifica se está habilitado
+     * 2) Detecta crash loop
+     * 3) Salva timestamp
+     * 4) Abre DefaultActivity
+     * 5) Finaliza processo
+     */
+    private static void installHandler() {
 
-                        @Override
-                        public void onActivityStarted(Activity activity) {
-                            currentlyStartedActivities++;
-                            isInBackground = (currentlyStartedActivities == 0);
-                        }
+        final Thread.UncaughtExceptionHandler oldHandler = Thread.getDefaultUncaughtExceptionHandler();
 
-                        @Override
-                        public void onActivityResumed(Activity activity) {
-                            if (isTrackActivitiesEnabled) {
-                                activityLog.add(dateFormat.format(new Date()) + ": " + activity.getClass().getSimpleName() + " resumed\n");
-                            }
-                        }
+        Thread.setDefaultUncaughtExceptionHandler((thread, throwable) -> {
 
-                        @Override
-                        public void onActivityPaused(Activity activity) {
-                            if (isTrackActivitiesEnabled) {
-                                activityLog.add(dateFormat.format(new Date()) + ": " + activity.getClass().getSimpleName() + " paused\n");
-                            }
-                        }
-
-                        @Override
-                        public void onActivityStopped(Activity activity) {
-                            currentlyStartedActivities--;
-                            isInBackground = (currentlyStartedActivities == 0);
-                        }
-
-                        @Override
-                        public void onActivitySaveInstanceState(Activity activity, Bundle outState) {
-                        }
-
-                        @Override
-                        public void onActivityDestroyed(Activity activity) {
-                            if (isTrackActivitiesEnabled) {
-                                activityLog.add(dateFormat.format(new Date()) + ": " + activity.getClass().getSimpleName() + " destroyed\n");
-                            }
-                        }
-                    });
-                }
-                Log.i(TAG, "UCEHandler has been installed.");
-            } else {
-                Log.e(TAG, "Context can not be null");
+            if (!isUCEHEnabled) {
+                if (oldHandler != null)
+                    oldHandler.uncaughtException(thread, throwable);
+                return;
             }
-        } catch (Throwable throwable) {
-            Log.e(TAG, "UCEHandler can not be initialized. Help making it better by reporting this as a bug.", throwable);
+
+            Log.e(TAG, "App crashed", throwable);
+
+            // Proteção contra crash loop
+            if (hasCrashedRecently()) {
+                Log.e(TAG, "Crash loop detected. Delegating to system.");
+                if (oldHandler != null)
+                    oldHandler.uncaughtException(thread, throwable);
+                return;
+            }
+
+            saveCrashTimestamp();
+
+            // Exibe tela de erro se permitido
+            if (!isInBackground || isBackgroundMode) {
+
+                Intent intent = new Intent(application, DefaultActivity.class);
+                intent.putExtra(EXTRA_STACK_TRACE, getStackTraceString(throwable));
+
+                if (isTrackActivitiesEnabled) {
+                    intent.putExtra(EXTRA_ACTIVITY_LOG, buildActivityLog());
+                }
+
+                intent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK);
+
+                application.startActivity(intent);
+            }
+
+            // Fecha última activity se existir
+            Activity lastActivity = lastActivityCreated.get();
+            if (lastActivity != null) {
+                lastActivity.finish();
+                lastActivityCreated.clear();
+            }
+
+            killCurrentProcess();
+        });
+
+        Log.i(TAG, "UnCaughtException installed.");
+    }
+
+    // ============================================================
+    // LIFECYCLE TRACKING
+    // ============================================================
+
+    /**
+     * Registra callback global para monitorar lifecycle.
+     * <p>
+     * Permite:
+     * - Detectar background/foreground
+     * - Montar histórico de navegação
+     */
+    private static void registerLifecycleCallbacks() {
+
+        application.registerActivityLifecycleCallbacks(new Application.ActivityLifecycleCallbacks() {
+
+                    final DateFormat dateFormat = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault());
+
+                    int startedActivities = 0;
+
+                    @Override
+                    public void onActivityCreated(@NonNull Activity activity, Bundle savedInstanceState) {
+
+                        if (activity.getClass() != DefaultActivity.class) {
+                            lastActivityCreated = new WeakReference<>(activity);
+                        }
+
+                        if (isTrackActivitiesEnabled) {
+                            addLog(dateFormat, activity, "created");
+                        }
+                    }
+
+                    @Override
+                    public void onActivityStarted(@NonNull Activity activity) {
+                        startedActivities++;
+                        isInBackground = startedActivities <= 0;
+                    }
+
+                    @Override
+                    public void onActivityResumed(@NonNull Activity activity) {
+                        if (isTrackActivitiesEnabled) {
+                            addLog(dateFormat, activity, "resumed");
+                        }
+                    }
+
+                    @Override
+                    public void onActivityPaused(@NonNull Activity activity) {
+                        if (isTrackActivitiesEnabled) {
+                            addLog(dateFormat, activity, "paused");
+                        }
+                    }
+
+                    @Override
+                    public void onActivityStopped(@NonNull Activity activity) {
+                        startedActivities--;
+                        isInBackground = startedActivities <= 0;
+                    }
+
+                    @Override
+                    public void onActivitySaveInstanceState(@NonNull Activity activity, @NonNull Bundle outState) {
+                    }
+
+                    @Override
+                    public void onActivityDestroyed(@NonNull Activity activity) {
+                    }
+                });
+    }
+
+    // ============================================================
+    // MÉTODOS AUXILIARES
+    // ============================================================
+
+    /**
+     * Converte Throwable em String com limite de tamanho
+     */
+    private static String getStackTraceString(Throwable throwable) {
+
+        StringWriter sw = new StringWriter();
+        throwable.printStackTrace(new PrintWriter(sw));
+
+        String stack = sw.toString();
+
+        if (stack.length() > MAX_STACK_TRACE_SIZE) {
+            stack = stack.substring(0, MAX_STACK_TRACE_SIZE) + " [truncated]";
         }
+
+        return stack;
     }
 
-    private static boolean hasCrashedInTheLastSeconds(Context context) {
-        long lastTimestamp = getLastCrashTimestamp(context);
-        long currentTimestamp = new Date().getTime();
-        return (lastTimestamp <= currentTimestamp && currentTimestamp - lastTimestamp < 3000);
+    /**
+     * Detecta crash repetido em curto intervalo (3s)
+     */
+    private static boolean hasCrashedRecently() {
+
+        SharedPreferences prefs = application.getSharedPreferences(PREF_FILE, Context.MODE_PRIVATE);
+
+        long last = prefs.getLong(KEY_LAST_CRASH, -1);
+        long now = System.currentTimeMillis();
+
+        return last != -1 && (now - last) < 3000;
     }
 
-    @SuppressLint("ApplySharedPref")
-    private static void setLastCrashTimestamp(Context context, long timestamp) {
-        context.getSharedPreferences(SHARED_PREFERENCES_FILE, Context.MODE_PRIVATE).edit().putLong(SHARED_PREFERENCES_FIELD_TIMESTAMP, timestamp).commit();
+    /**
+     * Usa commit() propositalmente.
+     * <p>
+     * apply() é assíncrono e pode não salvar antes do kill.
+     */
+    private static void saveCrashTimestamp() {
+        application.getSharedPreferences(PREF_FILE, Context.MODE_PRIVATE)
+                .edit()
+                .putLong(KEY_LAST_CRASH, System.currentTimeMillis())
+                .commit();
     }
 
+    /**
+     * Finaliza processo manualmente
+     */
     private static void killCurrentProcess() {
         android.os.Process.killProcess(android.os.Process.myPid());
         System.exit(10);
-    }
-
-    private static long getLastCrashTimestamp(Context context) {
-        return context.getSharedPreferences(SHARED_PREFERENCES_FILE, Context.MODE_PRIVATE).getLong(SHARED_PREFERENCES_FIELD_TIMESTAMP, -1);
     }
 
     static void closeApplication(Activity activity) {
@@ -225,35 +354,78 @@ public final class UnCaughtException {
         killCurrentProcess();
     }
 
+    /**
+     * Monta string final do log de Activities
+     */
+    private static String buildActivityLog() {
+
+        StringBuilder builder = new StringBuilder();
+
+        for (String entry : activityLog) {
+            builder.append(entry);
+        }
+
+        return builder.toString();
+    }
+
+    private static void addLog(DateFormat format, Activity activity, String event) {
+
+        if (activityLog.size() >= MAX_ACTIVITIES_IN_LOG) {
+            activityLog.poll();
+        }
+
+        activityLog.add(format.format(new Date()) + ": " + activity.getClass().getSimpleName() + " " + event + "\n");
+    }
+
+    // ============================================================
+    // BUILDER
+    // ============================================================
+
+    /**
+     * Builder responsável por configurar o handler.
+     * <p>
+     * Motivo do uso:
+     * - Permite futuras extensões sem quebrar API.
+     * - Mantém construção organizada.
+     */
     public static class Builder {
-        private Context context;
+
+        private final Application application;
+
         private boolean isUCEHEnabled = true;
-        private String commaSeparatedEmailAddresses;
         private boolean isTrackActivitiesEnabled = false;
         private boolean isBackgroundModeEnabled = true;
+
+        private String commaSeparatedEmailAddresses;
         private String[] mails = {};
 
+        /**
+         * Recebe qualquer Context.
+         * Internamente converte para Application.
+         */
         public Builder(Context context) {
-            this.context = context;
+            this.application =
+                    (Application) context.getApplicationContext();
         }
 
-        public Builder setUCEHEnabled(boolean isUCEHEnabled) {
-            this.isUCEHEnabled = isUCEHEnabled;
+        public Builder setUCEHEnabled(boolean enabled) {
+            this.isUCEHEnabled = enabled;
             return this;
         }
 
-        public Builder setTrackActivitiesEnabled(boolean isTrackActivitiesEnabled) {
-            this.isTrackActivitiesEnabled = isTrackActivitiesEnabled;
+        public Builder setTrackActivitiesEnabled(boolean enabled) {
+            this.isTrackActivitiesEnabled = enabled;
             return this;
         }
 
-        public Builder setBackgroundModeEnabled(boolean isBackgroundModeEnabled) {
-            this.isBackgroundModeEnabled = isBackgroundModeEnabled;
+        public Builder setBackgroundModeEnabled(boolean enabled) {
+            this.isBackgroundModeEnabled = enabled;
             return this;
         }
 
-        public Builder addCommaSeparatedEmailAddresses(String commaSeparatedEmailAddresses) {
-            this.commaSeparatedEmailAddresses = (commaSeparatedEmailAddresses != null) ? commaSeparatedEmailAddresses : "";
+        public Builder addCommaSeparatedEmailAddresses(String emails) {
+            this.commaSeparatedEmailAddresses =
+                    emails != null ? emails : "";
             return this;
         }
 
@@ -262,16 +434,28 @@ public final class UnCaughtException {
             return this;
         }
 
+        /**
+         * Finaliza configuração e instala handler.
+         * <p>
+         * Salva e-mails no SharedPreferences
+         * para uso posterior pela DefaultActivity.
+         */
         public UnCaughtException build() {
+
             Gson gson = new Gson();
             String value = gson.toJson(mails);
 
-            SharedPreferences preferences = PreferenceManager.getDefaultSharedPreferences(context);
-            SharedPreferences.Editor editor = preferences.edit();
-            editor.putString("mails", value);
-            editor.apply();
+            SharedPreferences prefs = application.getSharedPreferences(PREF_FILE, Context.MODE_PRIVATE);
+
+            prefs.edit().putString("mails", value).apply();
 
             return new UnCaughtException(this);
         }
     }
 }
+
+
+/*
+
+
+*/

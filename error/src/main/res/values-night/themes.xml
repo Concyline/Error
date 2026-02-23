@@ -13,4 +13,12 @@
         <item name="android:statusBarColor" tools:targetApi="l">?attr/colorPrimaryVariant</item>
         <!-- Customize your theme here. -->
     </style>
+
+    <style name="Theme.Error.NoActionBar" parent="Theme.MaterialComponents.DayNight.NoActionBar">
+
+        <!-- Remove interferência -->
+        <item name="materialButtonStyle">@style/Widget.AppCompat.Button</item>
+        <item name="android:buttonStyle">@style/Widget.AppCompat.Button</item>
+
+    </style>
 </resources>

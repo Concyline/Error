@@ -8,5 +8,5 @@
     <color name="black">#FF000000</color>
     <color name="white">#FFFFFFFF</color>
 
-    <color name="textview_text_color">#444444</color>
+    <color name="textview_text_color">#BDBDBD</color>
 </resources>

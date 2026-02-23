@@ -1,13 +1,12 @@
 package br.com.error;
 
+import android.annotation.SuppressLint;
 import android.app.AlertDialog;
 import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.Context;
-import android.content.DialogInterface;
 import android.content.Intent;
 import android.content.SharedPreferences;
-import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageInfo;
 import android.content.pm.PackageManager;
 import android.net.Uri;
@@ -15,10 +14,9 @@ import android.os.Build;
 import android.os.Bundle;
 import android.os.Environment;
 import android.os.StatFs;
-import android.preference.PreferenceManager;
 import android.text.TextUtils;
 import android.util.Log;
-import android.util.TypedValue;
+import android.view.LayoutInflater;
 import android.view.View;
 import android.widget.TextView;
 import android.widget.Toast;
@@ -30,105 +28,72 @@ import com.google.gson.Gson;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.text.DateFormat;
 import java.text.SimpleDateFormat;
 import java.util.Date;
 import java.util.Locale;
 
-import br.com.error.permision.PermUtil;
-import br.com.error.permision.WorkFinish;
-
 public class DefaultActivity extends AppCompatActivity {
 
-    private File txtFile;
     private String strCurrentErrorLog;
     private DateFormat dateFormat;
+
+    /**
+     * Arquivo de SharedPreferences utilizado pela lib
+     */
+    private static final String PREF_FILE = "uceh_preferences";
+
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_default);
 
-        dateFormat = new SimpleDateFormat("dd-MM-yyyy_HH:mm:ss");
+        dateFormat = new SimpleDateFormat("dd-MM-yyyy_HH:mm:ss", Locale.getDefault());
 
-        findViewById(R.id.button_close_app).setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                UnCaughtException.closeApplication(DefaultActivity.this);
-            }
+        findViewById(R.id.button_close_app).setOnClickListener(v -> {
+            UnCaughtException.closeApplication(DefaultActivity.this);
         });
 
-        findViewById(R.id.button_copy_error_log).setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                copyErrorToClipboard();
-            }
+        findViewById(R.id.button_copy_error_log).setOnClickListener(v -> {
+            copyErrorToClipboard();
         });
 
-        findViewById(R.id.button_share_error_log).setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                shareErrorLog();
-            }
+        findViewById(R.id.button_share_error_log).setOnClickListener(v -> {
+            shareErrorLog();
         });
 
-        findViewById(R.id.button_save_error_log).setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                saveErrorLogToFile();
-            }
+        findViewById(R.id.button_save_error_log).setOnClickListener(v -> {
+            saveErrorLogToFile();
         });
 
-        findViewById(R.id.button_share_email_log).setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                shareEmailLog();
-            }
+        findViewById(R.id.button_share_email_log).setOnClickListener(v -> {
+            shareEmailLog();
         });
 
-        findViewById(R.id.button_view_error_log).setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                AlertDialog dialog = new AlertDialog.Builder(DefaultActivity.this)
-                        .setTitle("Erros encontrados")
-                        .setMessage(getAllErrorDetailsFromIntent(DefaultActivity.this, getIntent()))
-                        .setPositiveButton("Copiar Log & Fechar",
-                                new DialogInterface.OnClickListener() {
-                                    @Override
-                                    public void onClick(DialogInterface dialog, int which) {
-                                        copyErrorToClipboard();
-                                        dialog.dismiss();
-                                    }
-                                })
-                        .setNeutralButton("Fechar",
-                                new DialogInterface.OnClickListener() {
-                                    @Override
-                                    public void onClick(DialogInterface dialog, int which) {
-                                        dialog.dismiss();
-                                    }
-                                })
-                        .show();
-                TextView textView = dialog.findViewById(android.R.id.message);
-                if (textView != null) {
-                    textView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 18);
-                }
-            }
+        findViewById(R.id.button_view_error_log).setOnClickListener(v -> {
+
+            LayoutInflater inflater = LayoutInflater.from(this);
+            View view = inflater.inflate(R.layout.dialog_error_log, null);
+
+            TextView txtErrorLog = view.findViewById(R.id.txtErrorLog);
+            txtErrorLog.setText(getAllErrorDetailsFromIntent(this, getIntent()));
+
+            AlertDialog dialog = new AlertDialog.Builder(this)
+                    .setTitle("Erros encontrados")
+                    .setView(view)
+                    .setPositiveButton("Copiar Log & Fechar", (dialog1, which) -> {
+                        copyErrorToClipboard();
+                        dialog1.dismiss();
+                    })
+                    .setNeutralButton("Fechar", (dialog2, which) -> {
+                        dialog2.dismiss();
+                    })
+                    .create();
+
+            dialog.show();
         });
-    }
-
-    public String getApplicationName(Context context) {
-        ApplicationInfo applicationInfo = context.getApplicationInfo();
-        int stringId = applicationInfo.labelRes;
-        return stringId == 0 ? applicationInfo.nonLocalizedLabel.toString() : context.getString(stringId);
-    }
-
-    private String getVersionName(Context context) {
-        try {
-            PackageInfo packageInfo = context.getPackageManager().getPackageInfo(context.getPackageName(), 0);
-            return packageInfo.versionName;
-        } catch (Exception e) {
-            return "Unknown";
-        }
     }
 
     private String getActivityLogFromIntent(Intent intent) {
@@ -140,74 +105,86 @@ public class DefaultActivity extends AppCompatActivity {
     }
 
     private void saveErrorLogToFile() {
-        PermUtil.checkForCamaraWritePermissions(this, new WorkFinish() {
-            @Override
-            public void onWorkFinish(Boolean check) {
 
-                Boolean isSDPresent = Environment.getExternalStorageState().equals(Environment.MEDIA_MOUNTED);
-                if (isSDPresent) {
-                    Date currentDate = new Date();
+        File baseDir = new File(getExternalFilesDir(null), "UnCaughtException");
 
-                    String errorLogFileName = "Error_" + dateFormat.format(currentDate);
-                    String errorLog = getAllErrorDetailsFromIntent(DefaultActivity.this, getIntent());
-                    String fullPath = Environment.getExternalStorageDirectory() + "/UnCaughtException/";
-                    FileOutputStream outputStream;
-                    try {
-                        File file = new File(fullPath);
-                        file.mkdir();
+        // 1️⃣ Criar diretório se não existir
+        if (!baseDir.exists()) {
+            boolean dirCreated = baseDir.mkdirs();
 
-                        txtFile = new File(fullPath + errorLogFileName + ".txt");
-
-                        if (file.exists()) {
-                            if (!txtFile.exists()) {
-                                txtFile.createNewFile();
-                            }
-                        }
-
-                        outputStream = new FileOutputStream(txtFile);
-                        outputStream.write(errorLog.getBytes());
-                        outputStream.close();
-                        if (txtFile.exists()) {
-                            Toast.makeText(DefaultActivity.this, "File Saved Successfully", Toast.LENGTH_SHORT).show();
-                        }
-                    } catch (IOException e) {
-                        Toast.makeText(DefaultActivity.this, "Storage Permission Not Found", Toast.LENGTH_SHORT).show();
-                        e.printStackTrace();
-                    }
-                }
-
+            if (!dirCreated) {
+                showMessage("Falha ao criar diretório de logs.");
+                return;
             }
-        });
+        }
+
+        Date currentDate = new Date();
+        String fileName = "Error_" + dateFormat.format(currentDate) + ".txt";
+        File logFile = new File(baseDir, fileName);
+
+        String errorLog = getAllErrorDetailsFromIntent(this, getIntent());
+
+        // 2️⃣ Escrever arquivo com try-with-resources
+        try (FileOutputStream fos = new FileOutputStream(logFile)) {
+
+            fos.write(errorLog.getBytes(StandardCharsets.UTF_8));
+            fos.flush(); // força escrita
+
+            showMessage("Arquivo salvo com sucesso em:\n\n" + logFile.getAbsolutePath());
+
+        } catch (IOException e) {
+            showMessage("Erro ao salvar arquivo:\n" + e.getMessage());
+            e.printStackTrace();
+        }
+    }
+
+    private void showMessage(String message) {
+        new AlertDialog.Builder(this)
+                .setTitle("Log de Erro")
+                .setMessage(message)
+                .setPositiveButton("OK", null)
+                .show();
     }
 
     private void shareEmailLog() {
+
+        String errorInformation = getAllErrorDetailsFromIntent(this, getIntent());
+
+
+        SharedPreferences preferences = getSharedPreferences(PREF_FILE, Context.MODE_PRIVATE);
+
+        String json = preferences.getString("mails", "[]");
+
+        String[] emails = new Gson().fromJson(json, String[].class);
+
+        if (emails == null || emails.length == 0) {
+            Toast.makeText(this, "Nenhum e-mail configurado.", Toast.LENGTH_SHORT).show();
+            return;
+        }
+
         Intent intent = new Intent(Intent.ACTION_SENDTO);
-        intent.setData(Uri.parse("mailto:"));
-        intent.setType("message/rfc822");
-
-        Gson gson = new Gson();
-        SharedPreferences preferences = PreferenceManager.getDefaultSharedPreferences(this);
-        String string = preferences.getString("mails", "[]");
-
-        String[] array = gson.fromJson(string, String[].class);
-
-        intent.putExtra(Intent.EXTRA_EMAIL, array);
-        intent.putExtra(Intent.EXTRA_SUBJECT, "Errors found");
-
-        String errorInformation = getAllErrorDetailsFromIntent(DefaultActivity.this, getIntent());
+        intent.setData(Uri.parse("mailto:")); // Garante apenas apps de email
+        intent.putExtra(Intent.EXTRA_EMAIL, emails);
+        intent.putExtra(Intent.EXTRA_SUBJECT, "Application Crash Report");
         intent.putExtra(Intent.EXTRA_TEXT, errorInformation);
 
-        startActivity(Intent.createChooser(intent, "Email via..."));
+        try {
+            startActivity(Intent.createChooser(intent, "Enviar relatório por e-mail"));
+        } catch (android.content.ActivityNotFoundException e) {
+            Toast.makeText(this, "Nenhum aplicativo de e-mail encontrado.", Toast.LENGTH_SHORT).show();
+        }
     }
 
     private void shareErrorLog() {
-        String errorLog = getAllErrorDetailsFromIntent(DefaultActivity.this, getIntent());
-        Intent share = new Intent(Intent.ACTION_SEND);
-        share.setType("text/plain");
-        share.addFlags(Intent.FLAG_ACTIVITY_CLEAR_WHEN_TASK_RESET);
-        share.putExtra(Intent.EXTRA_SUBJECT, "Application Crash Error Log");
-        share.putExtra(Intent.EXTRA_TEXT, errorLog);
-        startActivity(Intent.createChooser(share, "Share Error Log"));
+
+        String errorLog = getAllErrorDetailsFromIntent(this, getIntent());
+
+        Intent shareIntent = new Intent(Intent.ACTION_SEND);
+        shareIntent.setType("text/plain");
+        shareIntent.putExtra(Intent.EXTRA_SUBJECT, "Crash Report");
+        shareIntent.putExtra(Intent.EXTRA_TEXT, errorLog);
+
+        startActivity(Intent.createChooser(shareIntent, "Compartilhar relatório de erro"));
     }
 
     private void copyErrorToClipboard() {
@@ -222,70 +199,106 @@ public class DefaultActivity extends AppCompatActivity {
 
     private String getAllErrorDetailsFromIntent(Context context, Intent intent) {
 
-        if (TextUtils.isEmpty(strCurrentErrorLog)) {
+        if (!TextUtils.isEmpty(strCurrentErrorLog)) {
+            return strCurrentErrorLog;
+        }
 
-            String LINE_SEPARATOR = "\n";
-            StringBuilder errorReport = new StringBuilder();
-            errorReport.append("***** UnCaughtException");
-            errorReport.append("\n***** AndroidUi\n");
+        final String NL = "\n";
+        final String SEP = "======================================================";
 
-            errorReport.append("\n***** DEVICE INFO \n");
-            errorReport.append("Locale: ").append(Locale.getDefault()).append(LINE_SEPARATOR);
-            errorReport.append("Brand: ").append(Build.BRAND).append(LINE_SEPARATOR);
-            errorReport.append("Board: ").append(Build.BOARD).append(LINE_SEPARATOR);
-            errorReport.append("Device: ").append(Build.DEVICE).append(LINE_SEPARATOR);
-            errorReport.append("Model: ").append(Build.MODEL).append(LINE_SEPARATOR);
-            errorReport.append("Manufacturer: ").append(Build.MANUFACTURER).append(LINE_SEPARATOR);
-            errorReport.append("Product: ").append(Build.PRODUCT).append(LINE_SEPARATOR);
-            errorReport.append("SDK: ").append(Build.VERSION.SDK).append(LINE_SEPARATOR);
-            errorReport.append("Android Version: ").append(Build.VERSION.RELEASE).append(LINE_SEPARATOR);
-            errorReport.append("Host: ").append(Build.HOST).append(LINE_SEPARATOR);
-            errorReport.append("ID: ").append(Build.ID).append(LINE_SEPARATOR);
-            errorReport.append("Type: ").append(Build.TYPE).append(LINE_SEPARATOR);
+        StringBuilder errorReport = new StringBuilder();
+
+        // DEVICE INFO
+        errorReport.append(NL).append("DEVICE INFO").append(NL);
+        errorReport.append(SEP).append(NL);
+        errorReport.append("Locale : ").append(Locale.getDefault()).append(NL);
+        errorReport.append("Brand : ").append(Build.BRAND).append(NL);
+        errorReport.append("Board : ").append(Build.BOARD).append(NL);
+        errorReport.append("Device : ").append(Build.DEVICE).append(NL);
+        errorReport.append("Model : ").append(Build.MODEL).append(NL);
+        errorReport.append("Manufacturer : ").append(Build.MANUFACTURER).append(NL);
+        errorReport.append("Product : ").append(Build.PRODUCT).append(NL);
+        errorReport.append("SDK : ").append(Build.VERSION.SDK_INT).append(NL);
+        errorReport.append("Android Version : ").append(Build.VERSION.RELEASE).append(NL);
+        errorReport.append("Host : ").append(Build.HOST).append(NL);
+        errorReport.append("Build ID : ").append(Build.ID).append(NL);
+        errorReport.append("Build Type : ").append(Build.TYPE).append(NL);
+
+        try {
             StatFs stat = getStatFs();
-            errorReport.append("Total Internal memory: ").append(getTotalInternalMemorySize(stat)).append(LINE_SEPARATOR);
-            errorReport.append("Available Internal memory: ").append(getAvailableInternalMemorySize(stat)).append(LINE_SEPARATOR);
 
-            errorReport.append("\n***** APP INFO \n");
-            try {
-                PackageManager pm = context.getPackageManager();
-                PackageInfo pi;
-                pi = pm.getPackageInfo(context.getPackageName(), 0);
-                errorReport.append("Version: ").append(pi.versionName).append('\n');
-                errorReport.append("Package: ").append(pi.packageName).append('\n');
-            } catch (Exception e) {
-                Log.e("CustomExceptionHandler", "Error", e);
-                errorReport.append("Could not get Version information for ").append(context.getPackageName());
-            }
+            long totalBytes = stat.getTotalBytes();
+            double totalMB = totalBytes / (1024.0 * 1024.0);
 
-            Date currentDate = new Date();
-            String firstInstallTime = getFirstInstallTimeAsString(context, dateFormat);
+            errorReport.append("Total Memory : ").append(String.format(Locale.US, "%.2f MB", totalMB)).append(NL);
 
-            if (!TextUtils.isEmpty(firstInstallTime)) {
-                errorReport.append("Installed On: ").append(firstInstallTime).append(LINE_SEPARATOR);
-            }
-            String lastUpdateTime = getLastUpdateTimeAsString(context, dateFormat);
-            if (!TextUtils.isEmpty(lastUpdateTime)) {
-                errorReport.append("Updated On: ").append(lastUpdateTime).append(LINE_SEPARATOR);
-            }
-            errorReport.append("Current Date: ").append(dateFormat.format(currentDate)).append(LINE_SEPARATOR);
+            long avaliableBytes = stat.getAvailableBytes();
+            double avaliableMB = avaliableBytes / (1024.0 * 1024.0);
 
-            errorReport.append("\n***** ERROR LOG \n");
-            errorReport.append(getStackTraceFromIntent(intent));
-            errorReport.append(LINE_SEPARATOR);
+            errorReport.append("Available Memory : ").append(String.format(Locale.US, "%.2f MB", avaliableMB)).append(NL);
 
-            String activityLog = getActivityLogFromIntent(intent);
-            errorReport.append(LINE_SEPARATOR);
-            if (activityLog != null) {
-                errorReport.append("\n***** USER ACTIVITIES \n");
-                errorReport.append("User Activities: ").append(activityLog).append(LINE_SEPARATOR);
-            }
-            errorReport.append("\n***** END OF LOG *****\n");
-            strCurrentErrorLog = errorReport.toString();
-            return strCurrentErrorLog;
+        } catch (Exception ignored) {
+        }
 
+        // APP INFO
+        errorReport.append(NL).append("APP INFO").append(NL);
+        errorReport.append(SEP).append(NL);
+
+        try {
+            PackageInfo pi = getPackageInfoCompat(context);
+
+            errorReport.append("Version : ").append(pi.versionName).append(NL);
+            errorReport.append("Package : ").append(pi.packageName).append(NL);
+
+        } catch (Exception e) {
+            Log.e("CustomExceptionHandler", "Error", e);
+            errorReport.append("Version : Not available").append(NL);
+        }
+
+        Date currentDate = new Date();
+
+        String firstInstallTime = getFirstInstallTimeAsString(context, dateFormat);
+        if (!TextUtils.isEmpty(firstInstallTime)) {
+            errorReport.append("Installed On : ").append(firstInstallTime).append(NL);
+        }
+
+        String lastUpdateTime = getLastUpdateTimeAsString(context, dateFormat);
+        if (!TextUtils.isEmpty(lastUpdateTime)) {
+            errorReport.append("Updated On : ").append(lastUpdateTime).append(NL);
+        }
+
+        errorReport.append("Current Date : ").append(dateFormat.format(currentDate)).append(NL);
+
+        // ERROR LOG
+        errorReport.append(NL).append("ERROR LOG").append(NL);
+        errorReport.append(SEP).append(NL);
+        errorReport.append(getStackTraceFromIntent(intent)).append(NL);
+
+        String activityLog = getActivityLogFromIntent(intent);
+        if (!TextUtils.isEmpty(activityLog)) {
+            errorReport.append(NL).append("USER ACTIVITIES").append(NL);
+            errorReport.append(SEP).append(NL);
+            errorReport.append(activityLog).append(NL);
+        }
+
+        errorReport.append(NL).append(SEP).append(NL);
+        errorReport.append("END OF LOG").append(NL);
+        errorReport.append(SEP).append(NL);
+
+        strCurrentErrorLog = errorReport.toString();
+        return strCurrentErrorLog;
+    }
+
+    private PackageInfo getPackageInfoCompat(Context context) throws PackageManager.NameNotFoundException {
+        PackageManager pm = context.getPackageManager();
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            return pm.getPackageInfo(
+                    context.getPackageName(),
+                    PackageManager.PackageInfoFlags.of(0)
+            );
         } else {
-            return strCurrentErrorLog;
+            return pm.getPackageInfo(context.getPackageName(), 0);
         }
     }
 
@@ -294,22 +307,10 @@ public class DefaultActivity extends AppCompatActivity {
         return new StatFs(path.getPath());
     }
 
-    private long getAvailableInternalMemorySize(StatFs stat) {
-        long blockSize = stat.getBlockSize();
-        long availableBlocks = stat.getAvailableBlocks();
-        return availableBlocks * blockSize;
-    }
-
-    private long getTotalInternalMemorySize(StatFs stat) {
-        long blockSize = stat.getBlockSize();
-        long totalBlocks = stat.getBlockCount();
-        return totalBlocks * blockSize;
-    }
-
     private String getFirstInstallTimeAsString(Context context, DateFormat dateFormat) {
         long firstInstallTime;
         try {
-            firstInstallTime = context.getPackageManager().getPackageInfo(context.getPackageName(), 0).firstInstallTime;
+            firstInstallTime = getPackageInfoCompat(context).firstInstallTime;
             return dateFormat.format(new Date(firstInstallTime));
         } catch (PackageManager.NameNotFoundException e) {
             return "";
@@ -319,18 +320,10 @@ public class DefaultActivity extends AppCompatActivity {
     private String getLastUpdateTimeAsString(Context context, DateFormat dateFormat) {
         long lastUpdateTime;
         try {
-            lastUpdateTime = context.getPackageManager().getPackageInfo(context.getPackageName(), 0).lastUpdateTime;
+            lastUpdateTime = getPackageInfoCompat(context).lastUpdateTime;
             return dateFormat.format(new Date(lastUpdateTime));
         } catch (PackageManager.NameNotFoundException e) {
             return "";
         }
-    }
-
-    public boolean isExternalStorageWritable() {
-        String state = Environment.getExternalStorageState();
-        if (Environment.MEDIA_MOUNTED.equals(state)) {
-            return true;
-        }
-        return false;
     }
 }
